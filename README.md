@@ -10,7 +10,7 @@
 [![Google Ads API](https://img.shields.io/badge/Google%20Ads%20API-v23.2-orange)](https://developers.google.com/google-ads/api/docs/start)
 [![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-purple)](https://www.anthropic.com)
 
-**Google Ads MCP** is a self-hosted [Model Context Protocol](https://modelcontextprotocol.io) server that gives Claude direct access to the Google Ads API v23.2. Built by [Opti Webopz](https://optiwebopz.com).
+**Google Ads MCP** is a self-hosted [Model Context Protocol](https://modelcontextprotocol.io) server that gives Claude direct access to the Google Ads API v23.2. Built by [Opti WebOpz](https://optiwebopz.com).
 
 ---
 
@@ -391,7 +391,7 @@ Claude Code on Windows has a header issue with HTTP transport. Use the stdio bri
 
 ## 🏗️ Built by
 
-**[Opti Webopz](https://optiwebopz.com)** — Full-service digital agency specializing in WordPress, WooCommerce, and AI-powered automation.
+**[Opti WebOpz](https://optiwebopz.com)** — Full-service digital agency specializing in WordPress, WooCommerce, and AI-powered automation.
 
 **Contributor:** Muhammad Shaheer Mustafa
 
