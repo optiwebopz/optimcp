@@ -1,0 +1,19 @@
+{
+  "name": "gads-mcp",
+  "version": "1.0.2",
+  "description": "OptiMCP — Google Ads MCP Server (MCC / multi-account, full read+write) — API v23.2",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "auth": "node auth/oauth-setup.js"
+  },
+  "engines": { "node": ">=18.0.0" },
+  "dependencies": {
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.7"
+  },
+  "license": "MIT"
+}

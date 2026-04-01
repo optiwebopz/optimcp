@@ -1,0 +1,12 @@
+# Credentials — NEVER commit
+config.php
+.env
+*.log
+logs/
+logs/rate/
+.token_cache.json
+.pending_token.txt
+node_modules/
+.DS_Store
+__MACOSX/
+*.zip
