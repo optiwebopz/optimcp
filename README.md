@@ -393,7 +393,7 @@ Claude Code on Windows has a header issue with HTTP transport. Use the stdio bri
 
 **[Opti Webopz](https://optiwebopz.com)** — Full-service digital agency specializing in WordPress, WooCommerce, and AI-powered automation.
 
-**Contributors:** Muhammad Zumair Qureshi · M. Shaheer Mustafa
+**Contributors:** Muhammad Shaheer Mustafa
 
 ---
 
