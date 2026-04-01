@@ -3,8 +3,12 @@
  * File: /gads-mcp-php/mcp.php
  * OptiMCP Google Ads MCP Server — PHP Edition
  *
- * Version: 1.2.0
+ * Version: 1.3.0
  * Changelog:
+ *   2026-04-01 | v1.3.0 | SECURITY FIX: Added input sanitization at dispatcher layer —
+ *              |         | all string values trimmed/stripped/length-capped before reaching
+ *              |         | tool functions. Prevents array injection, oversized string attacks,
+ *              |         | and unexpected type coercion in tools.
  *   2026-04-01 | v1.2.0 | Permission controls — write tools can be disabled from dashboard
  *              |         | Blocked tools return 403 with clear message instead of executing
  *   2026-03-26 | v1.1.0 | LiteSpeed auth fix, GET public, error_reporting(0)
@@ -43,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// GET — public manifest
+// GET — public manifest (no auth — Claude Code health check compatibility)
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     mcp_success(mcp_tool_manifest());
     exit;
@@ -57,12 +61,54 @@ if (!mcp_authenticate()) {
     mcp_error(401, 'Unauthorized');
 }
 
-$raw   = file_get_contents('php://input');
-$body  = json_decode($raw, true) ?? [];
-$tool  = trim($body['tool']  ?? '');
-$input = $body['input']      ?? [];
+$raw  = file_get_contents('php://input');
+$body = json_decode($raw, true) ?? [];
+$tool = trim($body['tool'] ?? '');
+$rawInput = $body['input'] ?? [];
 
 if (empty($tool)) mcp_error(400, 'Missing tool name');
+
+// ── Input sanitization at dispatcher ─────────────────────────────────────────
+// FIXED: Sanitize all input values before reaching tool functions.
+// - Strings: strip tags, trim whitespace, cap at 512 chars
+// - Arrays: cap at 50 items (keywords etc)
+// - Numbers and booleans: passed through as-is
+// - Anything else: set to null (tools will validate and throw if required)
+if (!is_array($rawInput)) {
+    mcp_error(400, 'Invalid input format');
+}
+
+$input = mcp_sanitize_input($rawInput);
+
+function mcp_sanitize_input(array $data): array {
+    $out = [];
+    foreach ($data as $key => $value) {
+        $safeKey = is_string($key) ? substr(trim($key), 0, 64) : null;
+        if ($safeKey === null || $safeKey === '') continue;
+
+        if (is_string($value)) {
+            $out[$safeKey] = substr(trim(strip_tags($value)), 0, 512);
+        } elseif (is_int($value) || is_float($value)) {
+            $out[$safeKey] = $value;
+        } elseif (is_bool($value)) {
+            $out[$safeKey] = $value;
+        } elseif (is_array($value)) {
+            // Sanitize nested arrays (e.g. keywords list), cap at 50 items
+            $out[$safeKey] = array_slice(
+                array_map(function($item) {
+                    if (is_string($item)) return substr(trim(strip_tags($item)), 0, 512);
+                    if (is_array($item))  return mcp_sanitize_input($item);
+                    if (is_int($item) || is_float($item) || is_bool($item)) return $item;
+                    return null;
+                }, array_values($value)),
+                0, 50
+            );
+        } else {
+            $out[$safeKey] = null;
+        }
+    }
+    return $out;
+}
 
 // ── Permission check BEFORE dispatch ─────────────────────────────────────────
 if (!perm_check($tool)) {
@@ -110,7 +156,7 @@ try {
     $fn     = $TOOLS[$tool];
     $result = $fn($input);
     mcp_success($result);
-} catch (InvalidArgumentException) {
+} catch (InvalidArgumentException $e) {
     mcp_error(404, 'Unknown tool');
 } catch (Throwable $e) {
     mcp_log('error', 'Tool execution failed', ['tool' => $tool, 'err' => $e->getMessage()]);

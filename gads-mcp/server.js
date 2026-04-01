@@ -1,59 +1,77 @@
-/**
- * File: /gads-mcp/server.js
- * OptiMCP — Google Ads MCP Server
- *
- * Version: 1.1.0
- * Changelog:
- *   2026-04-01 | v1.1.0 | Permission controls — per-tool enable/disable from dashboard
- *              |         | Blocked tools return 403 with clear message to Claude
- *   2026-03-26 | v1.0.3 | GET /mcp manifest made public (Claude Code health check compat)
- *   2026-03-26 | v1.0.0 | Initial release
- *
- * File structure:
- *   server.js                  ← this file
- *   .env                       ← credentials (copy from .env.example)
- *   auth/oauth-setup.js        ← run once: npm run auth
- *   lib/tokenManager.js        ← OAuth token auto-refresh
- *   lib/gadsClient.js          ← Google Ads API HTTP client
- *   lib/auth.js                ← MCP token auth middleware
- *   lib/logger.js              ← file logger
- *   tools/accountTools.js      ← list_accounts, get_account, run_gaql
- *   tools/reportingTools.js    ← performance reports
- *   tools/campaignTools.js     ← create/update/pause/remove campaigns
- *   tools/adGroupTools.js      ← create/update/pause/remove ad groups
- *   tools/adTools.js           ← create RSA, update ad status
- *   tools/keywordTools.js      ← add/update/remove keywords + negatives
- *
- * Port: 3848 (set PORT in .env to override)
- * Auth: X-MCP-Token header (set MCP_SECRET_TOKEN in .env)
- */
+// File: /gads-mcp/server.js
+// OptiMCP — Google Ads MCP Server
+//
+// Version: 1.2.0
+// Changelog:
+//   2026-04-01 | v1.2.0 | SECURITY FIX: Added express.json body size limit (64kb) to
+//              |         | prevent large-payload DoS attacks. Version bumped to match
+//              |         | security patch level of auth.js and dashboard/routes.js.
+//   2026-04-01 | v1.1.0 | Permission controls — per-tool enable/disable from dashboard
+//              |         | Blocked tools return 403 with clear message to Claude
+//   2026-03-26 | v1.0.3 | GET /mcp manifest made public (Claude Code health check compat)
+//   2026-03-26 | v1.0.0 | Initial release
+//
+// File structure:
+//   server.js                  ← this file
+//   .env                       ← credentials (copy from .env.example)
+//   auth/oauth-setup.js        ← run once: npm run auth
+//   lib/tokenManager.js        ← OAuth token auto-refresh
+//   lib/gadsClient.js          ← Google Ads API HTTP client
+//   lib/auth.js                ← MCP token auth middleware
+//   lib/logger.js              ← file logger
+//   lib/permissions.js         ← per-tool permission system
+//   tools/accountTools.js      ← list_accounts, get_account, run_gaql
+//   tools/reportingTools.js    ← performance reports
+//   tools/campaignTools.js     ← create/update/pause/remove campaigns
+//   tools/adGroupTools.js      ← create/update/pause/remove ad groups
+//   tools/adTools.js           ← create RSA, update ad status
+//   tools/keywordTools.js      ← add/update/remove keywords + negatives
+//
+// Port: 3848 (set PORT in .env to override)
+// Auth: X-MCP-Token header (set MCP_SECRET_TOKEN in .env)
 
 'use strict';
 
 require('dotenv').config();
 
-const express     = require('express');
-const path        = require('path');
-const rateLimit   = require('express-rate-limit');
-const { auth }    = require('./lib/auth');
-const { logger }  = require('./lib/logger');
+const express   = require('express');
+const path      = require('path');
+const rateLimit = require('express-rate-limit');
+const { auth }  = require('./lib/auth');
+const { logger } = require('./lib/logger');
 const { isAllowed, getBlockedMessage } = require('./lib/permissions');
 
 // ── Tool imports ──────────────────────────────────────────────────────────────
-const acct    = require('./tools/accountTools');
-const report  = require('./tools/reportingTools');
-const camp    = require('./tools/campaignTools');
-const adGrp   = require('./tools/adGroupTools');
-const ads     = require('./tools/adTools');
-const kw      = require('./tools/keywordTools');
+const acct      = require('./tools/accountTools');
+const report    = require('./tools/reportingTools');
+const camp      = require('./tools/campaignTools');
+const adGrp     = require('./tools/adGroupTools');
+const ads       = require('./tools/adTools');
+const kw        = require('./tools/keywordTools');
 const dashboard = require('./dashboard/routes');
 
 const app  = express();
 const PORT = parseInt(process.env.PORT || '3848', 10);
 
-// ── Middleware ────────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '512kb' }));
+const SERVER_VERSION = '1.2.0';
 
+// ── Middleware ────────────────────────────────────────────────────────────────
+
+// FIXED: 64kb body size limit — prevents large-payload DoS
+app.use(express.json({ limit: '64kb' }));
+
+app.use(rateLimit({
+    windowMs       : 60 * 1000,
+    max            : 120,
+    standardHeaders: true,
+    legacyHeaders  : false,
+    handler        : (req, res) => {
+        logger.warn('Rate limit exceeded', { ip: req.ip });
+        res.status(429).json({ ok: false, error: 'Too many requests' });
+    },
+}));
+
+// Security headers on all responses
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
@@ -61,37 +79,28 @@ app.use((req, res, next) => {
     next();
 });
 
-app.use(rateLimit({
-    windowMs: parseInt(process.env.MCP_RATE_WINDOW_MS || '60000', 10),
-    max     : parseInt(process.env.MCP_RATE_LIMIT     || '60',    10),
-    handler : (req, res) => {
-        logger.warn('Rate limit exceeded', { ip: req.ip });
-        res.status(429).json({ ok: false, error: 'Too many requests' });
-    },
-}));
-
-// ── Tool manifest ─────────────────────────────────────────────────────────────
+// ── MCP manifest ──────────────────────────────────────────────────────────────
 const MANIFEST = {
     name   : 'OptiMCP-GoogleAds',
-    version: '1.0.3',
+    version: SERVER_VERSION,
     tools  : [
         // Account
-        { name: 'list_accounts',         description: 'List all client accounts under the MCC' },
-        { name: 'get_account',           description: 'Get details for a specific customer account' },
-        { name: 'run_gaql',              description: 'Run a raw GAQL query against any account' },
+        { name: 'list_accounts',         description: 'List all client accounts under MCC' },
+        { name: 'get_account',           description: 'Get full account details by customer_id' },
+        { name: 'run_gaql',              description: 'Execute any raw GAQL query (read-only, capped at 1000 rows)' },
         // Reporting
-        { name: 'get_account_summary',   description: 'Account-level performance totals for a date range' },
-        { name: 'get_campaign_report',   description: 'Campaign performance: clicks, impressions, cost, conversions' },
+        { name: 'get_account_summary',   description: 'Account-level totals — impressions, clicks, cost, CTR, conversions, ROAS' },
+        { name: 'get_campaign_report',   description: 'Campaign performance sorted by cost' },
         { name: 'get_ad_group_report',   description: 'Ad group performance metrics' },
-        { name: 'get_keyword_report',    description: 'Keyword-level performance and quality scores' },
-        { name: 'get_ad_report',         description: 'Ad-level performance with headline/description preview' },
-        { name: 'get_search_terms',      description: 'Search terms report — what people actually searched' },
+        { name: 'get_keyword_report',    description: 'Keyword metrics with quality scores' },
+        { name: 'get_ad_report',         description: 'Ad performance with headline preview' },
+        { name: 'get_search_terms',      description: 'Actual search queries that triggered your ads' },
         // Campaigns
-        { name: 'list_campaigns',        description: 'List campaigns with status and budget' },
-        { name: 'get_campaign',          description: 'Get full details of one campaign' },
-        { name: 'create_campaign',       description: 'Create a new Search campaign with budget and bidding' },
+        { name: 'list_campaigns',        description: 'List campaigns with status, budget, bidding' },
+        { name: 'get_campaign',          description: 'Get full campaign details' },
+        { name: 'create_campaign',       description: 'Create a Search campaign (defaults to PAUSED)' },
         { name: 'update_campaign',       description: 'Update campaign name or status' },
-        { name: 'pause_campaign',        description: 'Pause a campaign' },
+        { name: 'pause_campaign',        description: 'Pause a live campaign' },
         { name: 'enable_campaign',       description: 'Enable a paused campaign' },
         { name: 'remove_campaign',       description: 'Permanently remove a campaign' },
         { name: 'set_campaign_budget',   description: 'Update daily budget for a campaign' },
@@ -104,7 +113,7 @@ const MANIFEST = {
         { name: 'remove_ad_group',       description: 'Remove an ad group' },
         // Ads
         { name: 'list_ads',              description: 'List ads with headlines, descriptions, and status' },
-        { name: 'create_rsa',            description: 'Create a Responsive Search Ad (3–15 headlines, 2–4 descriptions)' },
+        { name: 'create_rsa',            description: 'Create a Responsive Search Ad (defaults to PAUSED)' },
         { name: 'update_ad_status',      description: 'Pause, enable, or remove an ad' },
         // Keywords
         { name: 'add_keywords',          description: 'Add keywords (BROAD/PHRASE/EXACT) to an ad group' },
@@ -173,11 +182,13 @@ app.options('/mcp', (req, res) => {
 });
 
 app.post('/mcp', auth, async (req, res) => {
-    const { tool, input = {} } = req.body;
+    const { tool, input = {} } = req.body || {};
 
-    if (!tool) return res.status(400).json({ ok: false, error: 'Missing tool name' });
+    if (!tool || typeof tool !== 'string') {
+        return res.status(400).json({ ok: false, error: 'Missing tool name' });
+    }
 
-    // ── Permission check BEFORE dispatch ────────────────────────────────────
+    // ── Permission check (lib/permissions.js — per-tool) ────────────────────
     if (!isAllowed(tool)) {
         logger.warn(`Blocked tool call: ${tool} (disabled in permissions)`);
         return res.status(403).json({ ok: false, error: getBlockedMessage(tool), blocked: true });
@@ -186,10 +197,10 @@ app.post('/mcp', auth, async (req, res) => {
     const handler = TOOLS[tool];
     if (!handler) return res.status(404).json({ ok: false, error: `Unknown tool: ${tool}` });
 
-    // ── Permission check ──────────────────────────────────────────────────────
+    // ── Permission check (dashboard/routes.js — group-level) ────────────────
     const permission = dashboard.checkToolPermission(tool);
     if (!permission.allowed) {
-        logger.warn(`Tool blocked by permission`, { tool, group: permission.group });
+        logger.warn('Tool blocked by permission', { tool, group: permission.group });
         return res.status(403).json({ ok: false, error: permission.message });
     }
 
@@ -205,7 +216,7 @@ app.post('/mcp', auth, async (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-    res.json({ ok: true, service: 'OptiMCP-GoogleAds', version: '1.0.3' });
+    res.json({ ok: true, service: 'OptiMCP-GoogleAds', version: SERVER_VERSION });
 });
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -216,10 +227,10 @@ app.use((req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, '127.0.0.1', () => {
-    logger.info(`OptiMCP Google Ads server v1.0.3 started on port ${PORT}`);
-    logger.info(`Google Ads API version: ${process.env.GOOGLE_ADS_API_VERSION || 'v23.2'} (latest)`);
+    logger.info(`OptiMCP Google Ads server v${SERVER_VERSION} started on port ${PORT}`);
+    logger.info(`Google Ads API version: ${process.env.GOOGLE_ADS_API_VERSION || 'v23.2'}`);
     logger.info(`MCC ID: ${process.env.GOOGLE_ADS_MCC_ID}`);
-    logger.info(`Dashboard: https://yourdomain.com/dashboard (PIN: ${process.env.DASHBOARD_PIN ? 'set' : 'NOT SET — dashboard disabled'})`);
+    logger.info(`Dashboard: /dashboard — PIN: ${process.env.DASHBOARD_PIN ? 'set' : 'NOT SET — dashboard disabled'}`);
 });
 
 process.on('SIGTERM', () => { logger.info('Shutting down'); process.exit(0); });

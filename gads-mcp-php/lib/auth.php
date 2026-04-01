@@ -3,8 +3,12 @@
  * File: /gads-mcp-php/lib/auth.php
  * OptiMCP Google Ads MCP PHP — Auth + Rate Limiting
  *
- * Version: 1.1.0
+ * Version: 1.2.0
  * Changelog:
+ *   2026-04-01 | v1.2.0 | SECURITY/STABILITY FIX: Rate limiter now prunes stale
+ *              |         | files (1-in-20 chance per request) to prevent unlimited
+ *              |         | file accumulation on disk. Prevents inode/disk exhaustion
+ *              |         | on shared hosting when attacker rotates through many IPs.
  *   2026-03-26 | v1.1.0 | Added getallheaders() for LiteSpeed/Hostinger compatibility
  *              |         | Checks Authorization: Bearer AND X-MCP-Token headers
  *              |         | Logs token length on invalid token for diagnostics
@@ -65,6 +69,17 @@ function mcp_check_rate(): bool {
 
     if (!is_dir($dir)) @mkdir($dir, 0750, true);
 
+    // FIXED: Prune stale rate files (run ~1-in-20 requests) to prevent
+    // unlimited file accumulation when attackers rotate through many IPs.
+    if (rand(1, 20) === 1) {
+        $cutoff = $now - MCP_RATE_WINDOW_SECS;
+        foreach (glob($dir . '*.json') ?: [] as $f) {
+            if (@filemtime($f) < $cutoff) {
+                @unlink($f);
+            }
+        }
+    }
+
     $data = ['count' => 0, 'start' => $now];
     if (file_exists($file)) {
         $raw = @file_get_contents($file);
@@ -81,7 +96,7 @@ function mcp_check_rate(): bool {
 }
 
 function mcp_client_ip(): string {
-    foreach (['HTTP_CF_CONNECTING_IP','HTTP_X_FORWARDED_FOR','REMOTE_ADDR'] as $k) {
+    foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR'] as $k) {
         if (!empty($_SERVER[$k])) return explode(',', $_SERVER[$k])[0];
     }
     return '0.0.0.0';

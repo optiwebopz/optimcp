@@ -1,6 +1,6 @@
 {
   "name": "gads-mcp",
-  "version": "1.0.2",
+  "version": "1.2.0",
   "description": "OptiMCP — Google Ads MCP Server (MCC / multi-account, full read+write) — API v23.2",
   "main": "server.js",
   "scripts": {
