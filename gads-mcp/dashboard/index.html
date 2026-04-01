@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<!--
+  File: /gads-mcp/dashboard/index.html
+  OptiMCP Google Ads MCP — Secure Web Dashboard
+  Version: 1.0.0
+  Changelog:
+    2026-03-26 | v1.0.0 | Initial release
+    Features:
+      - Password-protected login (dashboard PIN set in .env)
+      - OAuth connection status with token expiry countdown
+      - Live MCC account list
+      - Real-time tool call log (last 100 entries)
+      - MCP token rotation UI
+      - Google Ads API version display + sunset warning
+      - One-click connection test
+      - Responsive, mobile-friendly
+
+  Dependencies:
+    Served by the gads-mcp Node.js server at /dashboard
+    API endpoints: /dashboard/api/* (auth-gated by dashboard PIN)
+    No external dependencies — pure HTML/CSS/JS
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OptiMCP · Google Ads Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #F7F8FA;
+    --surface:   #FFFFFF;
+    --border:    #E2E5EA;
+    --text:      #1A1D23;
+    --muted:     #6B7280;
+    --blue:      #1A56A0;
+    --blue-l:    #EBF2FC;
+    --green:     #1B7A3E;
+    --green-l:   #EAF5EE;
+    --amber:     #92500A;
+    --amber-l:   #FEF3CD;
+    --red:       #9B1C1C;
+    --red-l:     #FEE2E2;
+    --radius:    10px;
+    --mono:      'Courier New', monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:      #0F1117;
+      --surface: #1A1D23;
+      --border:  #2D3139;
+      --text:    #F1F3F6;
+      --muted:   #9CA3AF;
+      --blue-l:  #1A2A3A;
+      --green-l: #0D2318;
+      --amber-l: #2A1A00;
+      --red-l:   #2A0A0A;
+    }
+  }
+
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.6; min-height: 100vh; }
+
+  /* ── Login screen ── */
+  #login-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+  .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 40px; width: 100%; max-width: 360px; text-align: center; }
+  .login-logo { font-size: 13px; font-weight: 600; color: var(--blue); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 8px; }
+  .login-title { font-size: 22px; font-weight: 600; margin-bottom: 6px; }
+  .login-sub { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+  .login-card input[type="password"] { width: 100%; padding: 11px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 15px; margin-bottom: 12px; outline: none; text-align: center; letter-spacing: .2em; }
+  .login-card input[type="password"]:focus { border-color: var(--blue); }
+  .btn-primary { width: 100%; padding: 11px; background: var(--blue); color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+  .btn-primary:hover { opacity: .9; }
+  .login-error { font-size: 13px; color: var(--red); margin-top: 10px; min-height: 20px; }
+
+  /* ── App shell ── */
+  #app { display: none; }
+  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; position: sticky; top: 0; z-index: 10; }
+  .topbar-brand { font-size: 13px; font-weight: 600; color: var(--blue); letter-spacing: .06em; text-transform: uppercase; }
+  .topbar-right { display: flex; align-items: center; gap: 16px; }
+  .topbar-version { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .btn-logout { font-size: 12px; color: var(--muted); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  .btn-logout:hover { color: var(--text); }
+
+  .main { max-width: 1100px; margin: 0 auto; padding: 28px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 720px) { .main { grid-template-columns: 1fr; } }
+
+  /* ── Cards ── */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .card.full { grid-column: 1 / -1; }
+  .card-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; }
+  .card-title button { font-size: 12px; color: var(--blue); background: none; border: none; cursor: pointer; padding: 0; font-weight: 500; }
+  .card-title button:hover { text-decoration: underline; }
+
+  /* ── Status badge ── */
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; }
+  .badge::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .6; }
+  .badge-ok   { background: var(--green-l); color: var(--green); }
+  .badge-warn { background: var(--amber-l); color: var(--amber); }
+  .badge-err  { background: var(--red-l);   color: var(--red);   }
+  .badge-gray { background: var(--bg);      color: var(--muted); border: 1px solid var(--border); }
+
+  /* ── Stat blocks ── */
+  .stat { display: flex; flex-direction: column; gap: 4px; }
+  .stat-label { font-size: 12px; color: var(--muted); }
+  .stat-value { font-size: 22px; font-weight: 600; }
+  .stat-sub   { font-size: 12px; color: var(--muted); }
+
+  /* ── Connection card ── */
+  .conn-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .conn-row:last-child { border-bottom: none; }
+  .conn-label { font-size: 13px; color: var(--muted); }
+  .conn-value { font-size: 13px; font-weight: 500; text-align: right; }
+  .conn-mono  { font-family: var(--mono); font-size: 12px; }
+
+  /* ── Account list ── */
+  .account-item { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .account-item:last-child { border-bottom: none; }
+  .account-name { font-size: 13px; font-weight: 500; }
+  .account-id   { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
+  .account-meta { font-size: 11px; color: var(--muted); text-align: right; }
+
+  /* ── Log table ── */
+  .log-wrap { max-height: 280px; overflow-y: auto; margin-top: 4px; }
+  .log-entry { display: grid; grid-template-columns: 140px 130px 1fr 80px; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .log-entry:last-child { border-bottom: none; }
+  .log-time  { color: var(--muted); font-family: var(--mono); }
+  .log-tool  { font-family: var(--mono); color: var(--blue); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-cid   { color: var(--muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-status{ text-align: right; }
+  .log-header { grid-template-columns: 140px 130px 1fr 80px; font-weight: 600; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 0 0 8px; border-bottom: 2px solid var(--border); }
+  @media (max-width: 580px) {
+    .log-entry, .log-header { grid-template-columns: 1fr 1fr; }
+    .log-cid { display: none; }
+  }
+
+  /* ── Token rotation ── */
+  .token-display { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; word-break: break-all; color: var(--muted); margin-bottom: 12px; min-height: 42px; }
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn-sec { padding: 9px 18px; border: 1px solid var(--border); border-radius: 8px; background: none; color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; }
+  .btn-sec:hover { background: var(--bg); }
+  .btn-danger { padding: 9px 18px; border: 1px solid var(--red); border-radius: 8px; background: none; color: var(--red); font-size: 13px; font-weight: 500; cursor: pointer; }
+  .btn-danger:hover { background: var(--red-l); }
+
+  /* ── Version alert ── */
+  .version-alert { border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.6; display: flex; align-items: flex-start; gap: 10px; }
+  .version-alert.ok   { background: var(--green-l); color: var(--green); }
+  .version-alert.warn { background: var(--amber-l); color: var(--amber); }
+  .version-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+  /* ── Spinner / loading ── */
+  .loading { color: var(--muted); font-size: 13px; padding: 16px 0; }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Countdown ring ── */
+  .countdown-wrap { display: flex; align-items: center; gap: 12px; }
+  .ring { width: 44px; height: 44px; flex-shrink: 0; }
+  .ring-bg  { fill: none; stroke: var(--border); stroke-width: 4; }
+  .ring-fg  { fill: none; stroke-width: 4; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset .5s; }
+  .ring-text { font-size: 10px; font-weight: 600; fill: var(--text); dominant-baseline: central; text-anchor: middle; }
+</style>
+</head>
+<body>
+
+<!-- ── Login ──────────────────────────────────────────────────────────────── -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">OptiMCP</div>
+    <div class="login-title">Google Ads Dashboard</div>
+    <div class="login-sub">Enter your dashboard PIN to continue</div>
+    <input type="password" id="pin-input" placeholder="••••••••" maxlength="64" autocomplete="off">
+    <button class="btn-primary" onclick="doLogin()">Sign in</button>
+    <div class="login-error" id="login-err"></div>
+  </div>
+</div>
+
+<!-- ── App ────────────────────────────────────────────────────────────────── -->
+<div id="app">
+  <div class="topbar">
+    <div class="topbar-brand">OptiMCP · Google Ads</div>
+    <div class="topbar-right">
+      <span class="topbar-version" id="api-version-badge">API —</span>
+      <button class="btn-logout" onclick="doLogout()">Sign out</button>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- OAuth status -->
+    <div class="card">
+      <div class="card-title">
+        OAuth connection
+        <button onclick="testConnection()">Test now</button>
+      </div>
+      <div id="oauth-status"><span class="loading"><span class="spin"></span>Checking…</span></div>
+    </div>
+
+    <!-- API version -->
+    <div class="card">
+      <div class="card-title">API version status</div>
+      <div id="version-status"><span class="loading"><span class="spin"></span>Loading…</span></div>
+    </div>
+
+    <!-- Permission controls -->
+    <div class="card full">
+      <div class="card-title">
+        Permission controls — enable/disable write tools
+        <span id="perms-saved-badge" style="font-size:11px;color:var(--green);display:none;font-weight:400">✓ Saved</span>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+        <strong>Read tools are always on.</strong> Toggle individual write operations below.
+        When a tool is disabled, Claude receives a message saying it's turned off and to ask you to enable it first.
+      </p>
+      <div style="font-size:12px;padding:10px 14px;background:var(--blue-l);border-radius:8px;border-left:3px solid var(--blue);margin-bottom:18px;color:var(--blue);line-height:1.6">
+        💡 <strong>Tip:</strong> Disable remove/delete tools when doing routine work to prevent accidental deletion.
+        Danger tools (remove campaign, remove ad group, remove keyword) are highlighted in red.
+      </div>
+      <div id="perms-loading" style="text-align:center;padding:20px;color:var(--muted);font-size:13px"><span class="spin" style="display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:8px"></span>Loading permissions…</div>
+      <div id="perms-grid" style="display:none"></div>
+    </div>
+
+    <!-- MCC accounts -->
+    <div class="card full">
+      <div class="card-title">
+        MCC client accounts
+        <button onclick="loadAccounts()">Refresh</button>
+      </div>
+      <div id="accounts-list"><span class="loading"><span class="spin"></span>Loading accounts…</span></div>
+    </div>
+
+    <!-- ── Prompt Helper ── -->
+    <div class="card full">
+      <div class="card-title">
+        <span>Tool permissions — control what Claude can change</span>
+        <span id="perms-saved" style="font-size:11px;color:var(--green);display:none">✓ Saved</span>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:18px">Read and report tools are always enabled. Toggle write operations on/off. Claude is told which tools are disabled and will refuse to run them.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px" id="perms-grid">
+        <div class="perm-tile" id="pt-campaign_write">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div>
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px">Campaign writes</div>
+              <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">create · update · pause · enable · remove · set budget</div>
+            </div>
+            <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0">
+              <input type="checkbox" id="tog-campaign_write" onchange="savePermission('campaign_write',this.checked)" style="opacity:0;width:0;height:0">
+              <span class="tog-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="perm-tile" id="pt-adgroup_write">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div>
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px">Ad group writes</div>
+              <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">create · update · pause · enable · remove</div>
+            </div>
+            <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0">
+              <input type="checkbox" id="tog-adgroup_write" onchange="savePermission('adgroup_write',this.checked)" style="opacity:0;width:0;height:0">
+              <span class="tog-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="perm-tile" id="pt-ad_write">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div>
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px">Ad writes</div>
+              <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">create RSA · update ad status</div>
+            </div>
+            <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0">
+              <input type="checkbox" id="tog-ad_write" onchange="savePermission('ad_write',this.checked)" style="opacity:0;width:0;height:0">
+              <span class="tog-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="perm-tile" id="pt-keyword_write">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div>
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px">Keyword writes</div>
+              <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">add · update · remove · add negatives</div>
+            </div>
+            <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0">
+              <input type="checkbox" id="tog-keyword_write" onchange="savePermission('keyword_write',this.checked)" style="opacity:0;width:0;height:0">
+              <span class="tog-slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div style="padding:10px 12px;background:var(--blue-l);border-radius:8px;border-left:3px solid var(--blue);font-size:12px;color:var(--blue);line-height:1.6">
+        <strong>How this works:</strong> When a write group is disabled, Claude receives a clear message that those operations are turned off. Claude will not attempt to run them and will tell you to enable them in the dashboard first.
+      </div>
+    </div>
+
+    <!-- ── Prompt Helper ── -->
+    <div class="card full">
+      <div class="card-title">Prompt helper — browse accounts &amp; generate Claude prompts</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:16px">Select an account, then browse campaigns and ad groups by name. Click any prompt to copy it — paste straight into Claude.</p>
+
+      <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">1. Select account</label>
+      <select id="ph-acct" onchange="phLoadCampaigns()" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;margin-bottom:12px;cursor:pointer">
+        <option value="">— loading accounts… —</option>
+      </select>
+
+      <div id="ph-camp-section" style="display:none">
+        <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">2. Select campaign</label>
+        <select id="ph-camp" onchange="phLoadAdGroups()" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;margin-bottom:12px;cursor:pointer">
+          <option value="">— choose a campaign —</option>
+        </select>
+      </div>
+
+      <div id="ph-ag-section" style="display:none">
+        <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">3. Select ad group</label>
+        <select id="ph-ag" onchange="phLoadAds()" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;margin-bottom:12px;cursor:pointer">
+          <option value="">— choose an ad group —</option>
+        </select>
+      </div>
+
+      <div id="ph-spinner" style="display:none;text-align:center;padding:16px"><span class="spin" style="width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;display:inline-block;animation:spin .7s linear infinite"></span></div>
+
+      <div id="ph-camp-table" style="display:none;margin-top:8px"></div>
+
+      <div id="ph-prompts" style="display:none;margin-top:16px">
+        <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:8px">Ready-to-use Claude prompts — click to copy</label>
+        <div id="ph-prompts-list" style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg)"></div>
+      </div>
+    </div>
+
+    <!-- Token rotation -->
+    <div class="card">
+      <div class="card-title">MCP secret token</div>
+      <div class="token-display" id="token-display">••••••••••••••••••••••••••••••••</div>
+      <div class="btn-row">
+        <button class="btn-sec" onclick="revealToken()">Reveal</button>
+        <button class="btn-sec" onclick="generateToken()">Generate new</button>
+        <button class="btn-danger" id="save-token-btn" style="display:none" onclick="saveToken()">Save & restart</button>
+      </div>
+      <div id="token-msg" style="margin-top:10px;font-size:12px;"></div>
+    </div>
+
+    <!-- Stats -->
+    <div class="card">
+      <div class="card-title">Tool call stats (last 24h)</div>
+      <div id="call-stats" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <span class="loading"><span class="spin"></span>Loading…</span>
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="card full">
+      <div class="card-title">
+        Recent tool calls
+        <button onclick="loadLog()">Refresh</button>
+      </div>
+      <div class="log-wrap">
+        <div class="log-entry log-header">
+          <span>Time</span><span>Tool</span><span>Customer ID</span><span>Status</span>
+        </div>
+        <div id="log-body"><span class="loading"><span class="spin"></span>Loading log…</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let PIN = '';
+let newTokenValue = '';
+const SUPPORTED_VERSIONS = ['v20','v21','v22','v23','v23.1','v23.2'];
+const SUNSET = { v20:'Jun 2026', v21:'Aug 2026', v22:'Oct 2026', v23:'Feb 2027', 'v23.1':'Feb 2027', 'v23.2':'Feb 2027' };
+
+// ── Auth ───────────────────────────────────────────────────────────────────
+function doLogin() {
+  const val = document.getElementById('pin-input').value.trim();
+  if (!val) return;
+  PIN = val;
+  apiFetch('/dashboard/api/auth', {}).then(r => {
+    if (r.ok) {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      loadAll();
+    } else {
+      document.getElementById('login-err').textContent = 'Incorrect PIN.';
+      PIN = '';
+    }
+  }).catch(() => {
+    document.getElementById('login-err').textContent = 'Could not reach server.';
+    PIN = '';
+  });
+}
+
+document.getElementById('pin-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+function doLogout() {
+  PIN = '';
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('pin-input').value = '';
+  document.getElementById('login-err').textContent = '';
+}
+
+// ── API fetch wrapper ──────────────────────────────────────────────────────
+async function apiFetch(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Dashboard-Pin': PIN },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+// ── Load all ───────────────────────────────────────────────────────────────
+function loadAll() {
+  loadOAuthStatus();
+  loadVersionStatus();
+  loadPerms();
+  loadAccounts();
+  loadLog();
+  loadStats();
+}
+
+// ── OAuth status ───────────────────────────────────────────────────────────
+function loadOAuthStatus() {
+  document.getElementById('oauth-status').innerHTML = '<span class="loading"><span class="spin"></span>Checking…</span>';
+  apiFetch('/dashboard/api/oauth-status', {}).then(r => {
+    const el = document.getElementById('oauth-status');
+    if (!r.ok) { el.innerHTML = `<span class="badge badge-err">Error</span><p style="font-size:12px;color:var(--muted);margin-top:8px">${r.error||'Unknown error'}</p>`; return; }
+    const d = r.data;
+    const expiresInMin = d.expires_in_seconds ? Math.floor(d.expires_in_seconds / 60) : null;
+    const pct = expiresInMin != null ? Math.min(100, (expiresInMin / 60) * 100) : 0;
+    const circ = 2 * Math.PI * 16; // r=16
+    const offset = circ - (pct / 100) * circ;
+    const color = pct > 30 ? 'var(--green)' : pct > 10 ? 'var(--amber)' : 'var(--red)';
+    const badge = d.valid ? `<span class="badge badge-ok">Connected</span>` : `<span class="badge badge-err">Disconnected</span>`;
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        ${badge}
+        ${expiresInMin != null ? `
+        <div class="countdown-wrap">
+          <div style="font-size:12px;color:var(--muted);text-align:right">Token expires in<br><strong style="color:var(--text)">${expiresInMin}m</strong></div>
+          <svg class="ring" viewBox="0 0 44 44">
+            <circle class="ring-bg" cx="22" cy="22" r="16"/>
+            <circle class="ring-fg" cx="22" cy="22" r="16" stroke="${color}"
+              stroke-dasharray="${circ}" stroke-dashoffset="${offset}"/>
+            <text class="ring-text" x="22" y="22">${Math.round(pct)}%</text>
+          </svg>
+        </div>` : ''}
+      </div>
+      <div class="conn-row"><span class="conn-label">MCC account</span><span class="conn-value conn-mono">${d.mcc_id || '—'}</span></div>
+      <div class="conn-row"><span class="conn-label">Last refreshed</span><span class="conn-value">${d.last_refresh || 'Not yet'}</span></div>
+      <div class="conn-row"><span class="conn-label">Auto-refresh</span><span class="conn-value"><span class="badge badge-ok">Enabled</span></span></div>
+    `;
+  });
+}
+
+function testConnection() {
+  document.getElementById('oauth-status').innerHTML = '<span class="loading"><span class="spin"></span>Testing…</span>';
+  apiFetch('/dashboard/api/test-connection', {}).then(r => {
+    loadOAuthStatus();
+  });
+}
+
+// ── Version status ─────────────────────────────────────────────────────────
+function loadVersionStatus() {
+  apiFetch('/dashboard/api/config', {}).then(r => {
+    if (!r.ok) return;
+    const ver = r.data.api_version || 'unknown';
+    document.getElementById('api-version-badge').textContent = `API ${ver}`;
+    const el = document.getElementById('version-status');
+    const isSupported = SUPPORTED_VERSIONS.includes(ver);
+    const sunset = SUNSET[ver] || 'Unknown';
+    const isLatest = ver === 'v23.2';
+    el.innerHTML = `
+      <div class="version-alert ${isLatest ? 'ok' : isSupported ? 'warn' : 'err'}" style="margin-bottom:12px">
+        <span class="version-icon">${isLatest ? '✓' : isSupported ? '!' : '✗'}</span>
+        <span>${isLatest ? `<strong>${ver}</strong> — current latest. No action needed.` :
+               isSupported ? `<strong>${ver}</strong> — supported but not latest. Update to v23.2 recommended.` :
+               `<strong>${ver}</strong> — unsupported or sunsetted. Update immediately.`}</span>
+      </div>
+      <div class="conn-row"><span class="conn-label">Current version</span><span class="conn-value conn-mono">${ver}</span></div>
+      <div class="conn-row"><span class="conn-label">Latest available</span><span class="conn-value conn-mono">v23.2</span></div>
+      <div class="conn-row"><span class="conn-label">Sunset date</span><span class="conn-value">${isSupported ? sunset : 'Already sunset'}</span></div>
+      <div class="conn-row"><span class="conn-label">Supported versions</span><span class="conn-value" style="font-size:11px;font-family:var(--mono)">${SUPPORTED_VERSIONS.join(', ')}</span></div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px">To update: change GOOGLE_ADS_API_VERSION in .env then run <code style="font-family:var(--mono)">pm2 restart gads-mcp</code></p>
+    `;
+  });
+}
+
+// ── Accounts ───────────────────────────────────────────────────────────────
+let _accounts = [];
+function loadAccounts() {
+  document.getElementById('accounts-list').innerHTML = '<span class="loading"><span class="spin"></span>Loading accounts…</span>';
+  apiFetch('/dashboard/api/accounts', {}).then(r => {
+    const el = document.getElementById('accounts-list');
+    if (!r.ok) { el.innerHTML = `<span style="color:var(--red);font-size:13px">${r.error}</span>`; return; }
+    const accts = r.data.accounts || [];
+    _accounts = accts;
+    if (!accts.length) { el.innerHTML = '<span style="color:var(--muted);font-size:13px">No accounts found under MCC.</span>'; return; }
+    el.innerHTML = accts.map(a => `
+      <div class="account-item" onclick="phSelectAccount('${esc(String(a.id))}','${esc(a.name.replace(/'/g,"\\'"))}')">
+        <div>
+          <div class="account-name">${esc(a.name)}</div>
+          <div class="account-id">${esc(String(a.id))}</div>
+        </div>
+        <div class="account-meta">
+          <span class="badge ${a.status==='ENABLED'?'badge-ok':'badge-gray'}">${a.status}</span><br>
+          <span style="font-size:11px;margin-top:4px;display:block">${a.currency} · ${a.timezone}</span>
+        </div>
+      </div>
+    `).join('');
+    // Populate Prompt Helper account selector
+    const sel = document.getElementById('ph-acct');
+    sel.innerHTML = '<option value="">— choose an account —</option>' +
+      accts.map(a => `<option value="${esc(String(a.id))}" data-name="${esc(a.name)}">${esc(a.name)} (${esc(String(a.id))}) · ${esc(a.currency||'')}</option>`).join('');
+  });
+}
+
+// ── Permissions ────────────────────────────────────────────────────────────
+let _permsData = {}, _permsTools = {};
+const GROUP_ORDER = ['Campaigns','Ad Groups','Ads','Keywords'];
+
+async function loadPerms() {
+  const r = await apiFetch('/dashboard/api/permissions', {});
+  if (!r.ok) return;
+  _permsData  = r.data  || {};
+  _permsTools = r.tools || {};
+  renderPermsGrid();
+  document.getElementById('perms-loading').style.display = 'none';
+  document.getElementById('perms-grid').style.display    = 'block';
+}
+
+function renderPermsGrid() {
+  const groups = {};
+  Object.entries(_permsTools).forEach(([toolName, info]) => {
+    const g = info.group || 'Other';
+    if (!groups[g]) groups[g] = [];
+    groups[g].push({ toolName, ...info });
+  });
+
+  const grid = document.getElementById('perms-grid');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px';
+  grid.innerHTML = '';
+
+  GROUP_ORDER.forEach(groupName => {
+    if (!groups[groupName]) return;
+    const col = document.createElement('div');
+    col.innerHTML = `<div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid var(--border)">${esc(groupName)}</div>`;
+    groups[groupName].forEach(({ toolName, label, danger }) => {
+      const enabled = _permsData[toolName] !== false;
+      const bgColor = enabled ? 'var(--bg)' : 'var(--red-l)';
+      const labelColor = danger ? 'var(--red)' : 'var(--text)';
+      const row = document.createElement('div');
+      row.id = 'prow-' + toolName;
+      row.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-radius:8px;margin-bottom:5px;background:${bgColor};border:1px solid var(--border);transition:background .2s`;
+      row.innerHTML = `
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:500;color:${labelColor}">${esc(label)}${danger ? ' ⚠️' : ''}</div>
+          <div style="font-size:10px;font-family:var(--mono);color:var(--muted);margin-top:1px">${esc(toolName)}</div>
+        </div>
+        <label style="position:relative;display:inline-block;width:42px;height:24px;flex-shrink:0;margin-left:12px;cursor:pointer">
+          <input type="checkbox" ${enabled ? 'checked' : ''} onchange="savePerm('${toolName}',this.checked)"
+            style="opacity:0;width:0;height:0;position:absolute">
+          <span id="slider-${toolName}" style="position:absolute;inset:0;border-radius:24px;background:${enabled?'var(--green)':'#D1D5DB'};transition:.2s;cursor:pointer">
+            <span style="position:absolute;left:${enabled?'20':'2'}px;top:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2)"></span>
+          </span>
+        </label>`;
+      col.appendChild(row);
+    });
+    grid.appendChild(col);
+  });
+
+  const notice = document.createElement('div');
+  notice.style.cssText = 'grid-column:1/-1;padding:11px 14px;background:var(--blue-l);border-radius:8px;border-left:3px solid var(--blue);font-size:12px;color:var(--blue);line-height:1.7;margin-top:4px';
+  notice.innerHTML = '🔒 <strong>Always enabled (read-only, cannot be disabled):</strong> list_accounts, get_account, run_gaql, get_account_summary, get_campaign_report, get_ad_group_report, get_keyword_report, get_ad_report, get_search_terms, list_campaigns, get_campaign, list_ad_groups, list_ads';
+  grid.appendChild(notice);
+}
+
+async function savePerm(toolName, enabled) {
+  _permsData[toolName] = enabled;
+  const row    = document.getElementById('prow-' + toolName);
+  const slider = document.getElementById('slider-' + toolName);
+  if (row)    row.style.background    = enabled ? 'var(--bg)' : 'var(--red-l)';
+  if (slider) {
+    slider.style.background = enabled ? 'var(--green)' : '#D1D5DB';
+    const thumb = slider.querySelector('span');
+    if (thumb) thumb.style.left = enabled ? '20px' : '2px';
+  }
+  const r = await apiFetch('/dashboard/api/permissions/save', { [toolName]: enabled });
+  if (r.ok) {
+    const badge = document.getElementById('perms-saved-badge');
+    badge.style.display = 'inline';
+    setTimeout(() => { badge.style.display = 'none'; }, 2500);
+  }
+}
+let phAcctId='', phAcctName='', phCampId='', phCampName='', phAgId='', phAgName='';
+
+function phSelectAccount(id, name) {
+  document.getElementById('ph-acct').value = id;
+  phLoadCampaigns();
+}
+
+async function phLoadCampaigns() {
+  const sel = document.getElementById('ph-acct');
+  phAcctId = sel.value;
+  phAcctName = sel.options[sel.selectedIndex]?.dataset?.name || sel.options[sel.selectedIndex]?.text || '';
+  phCampId = phCampName = phAgId = phAgName = '';
+  document.getElementById('ph-camp-section').style.display = 'none';
+  document.getElementById('ph-ag-section').style.display = 'none';
+  document.getElementById('ph-camp-table').style.display = 'none';
+  document.getElementById('ph-prompts').style.display = 'none';
+  if (!phAcctId) return;
+  document.getElementById('ph-spinner').style.display = 'block';
+  const [camps, report] = await Promise.all([
+    apiFetch('/dashboard/api/campaigns', { customer_id: phAcctId }),
+    apiFetch('/dashboard/api/campaign-report', { customer_id: phAcctId }),
+  ]);
+  document.getElementById('ph-spinner').style.display = 'none';
+  const campSel = document.getElementById('ph-camp');
+  campSel.innerHTML = '<option value="">— choose a campaign —</option>' +
+    (camps.data || []).map(c => `<option value="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}${c.status!=='ENABLED'?' ['+c.status+']':''}</option>`).join('');
+  document.getElementById('ph-camp-section').style.display = 'block';
+  // Campaign table with metrics
+  const reportMap = {};
+  (report.data || []).forEach(c => { reportMap[c.id] = c; });
+  const rows = (camps.data || []).map(c => {
+    const m = reportMap[c.id] || {};
+    const sc = c.status==='ENABLED'?'badge-ok':c.status==='PAUSED'?'badge-paused':'badge-gray';
+    return `<tr onclick="phSelectCampaign('${c.id}','${esc(c.name.replace(/'/g,"\\'"))}')" style="cursor:pointer">
+      <td><div style="font-weight:500">${esc(c.name)}</div><div style="font-size:10px;font-family:var(--mono);color:var(--muted)">${c.id}</div></td>
+      <td><span class="badge ${sc}">${c.status}</span></td>
+      <td style="font-size:12px">${c.daily_budget?'$'+c.daily_budget:'—'}</td>
+      <td style="font-size:12px">${m.impressions!=null?Number(m.impressions).toLocaleString():'—'}</td>
+      <td style="font-size:12px">${m.clicks!=null?Number(m.clicks).toLocaleString():'—'}</td>
+      <td style="font-size:12px">${m.cost?'$'+m.cost:'—'}</td>
+      <td style="font-size:12px">${m.ctr||'—'}</td>
+      <td style="font-size:12px">${m.conversions||'—'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('ph-camp-table').innerHTML = `
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="border-bottom:2px solid var(--border);background:var(--bg)">
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Campaign</th>
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Status</th>
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Budget</th>
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Impr.</th>
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Clicks</th>
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Cost</th>
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">CTR</th>
+        <th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Conv.</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  document.getElementById('ph-camp-table').style.display = 'block';
+  phShowAccountPrompts();
+}
+
+function phSelectCampaign(id, name) {
+  document.getElementById('ph-camp').value = id;
+  phLoadAdGroups();
+}
+
+async function phLoadAdGroups() {
+  const sel = document.getElementById('ph-camp');
+  phCampId = sel.value;
+  phCampName = sel.options[sel.selectedIndex]?.dataset?.name || sel.options[sel.selectedIndex]?.text || '';
+  phAgId = phAgName = '';
+  document.getElementById('ph-ag-section').style.display = 'none';
+  document.getElementById('ph-prompts').style.display = 'none';
+  if (!phCampId || !phAcctId) return;
+  document.getElementById('ph-spinner').style.display = 'block';
+  const r = await apiFetch('/dashboard/api/adgroups', { customer_id: phAcctId, campaign_id: phCampId });
+  document.getElementById('ph-spinner').style.display = 'none';
+  const agSel = document.getElementById('ph-ag');
+  agSel.innerHTML = '<option value="">— choose an ad group —</option>' +
+    (r.data || []).map(ag => `<option value="${ag.id}" data-name="${esc(ag.name)}">${esc(ag.name)}${ag.status!=='ENABLED'?' ['+ag.status+']':''}</option>`).join('');
+  document.getElementById('ph-ag-section').style.display = 'block';
+  phShowCampaignPrompts(r.data || []);
+}
+
+async function phLoadAds() {
+  const sel = document.getElementById('ph-ag');
+  phAgId = sel.value;
+  phAgName = sel.options[sel.selectedIndex]?.dataset?.name || sel.options[sel.selectedIndex]?.text || '';
+  if (!phAgId || !phAcctId) return;
+  document.getElementById('ph-spinner').style.display = 'block';
+  const r = await apiFetch('/dashboard/api/ads', { customer_id: phAcctId, ad_group_id: phAgId });
+  document.getElementById('ph-spinner').style.display = 'none';
+  phShowAdGroupPrompts(r.data || []);
+}
+
+function phShowAccountPrompts() {
+  phRenderPrompts([
+    { section: 'Account overview — ' + phAcctName, items: [
+      `Show me a performance summary for "${phAcctName}" for the last 30 days`,
+      `Get the campaign report for "${phAcctName}" for this month`,
+      `Show me all campaigns in "${phAcctName}" with their status and daily budget`,
+      `What are the top 5 campaigns by cost in "${phAcctName}" for last 30 days?`,
+      `Show me the search terms report for "${phAcctName}" this month`,
+      `List all paused campaigns in "${phAcctName}"`,
+      `Show me keyword performance in "${phAcctName}" for last 7 days`,
+    ]},
+  ]);
+}
+
+function phShowCampaignPrompts(adGroups) {
+  phRenderPrompts([
+    { section: 'Campaign — ' + phCampName, items: [
+      `Show me performance for campaign "${phCampName}" in "${phAcctName}" for last 30 days`,
+      `Pause campaign "${phCampName}" in "${phAcctName}"`,
+      `Enable campaign "${phCampName}" in "${phAcctName}"`,
+      `Set the daily budget for campaign "${phCampName}" to $50`,
+      `Show me the search terms report for campaign "${phCampName}" this month`,
+      `Show me the keyword report for campaign "${phCampName}" this month`,
+      `Show me all ads in campaign "${phCampName}"`,
+      `Show me all ad groups in campaign "${phCampName}"`,
+    ]},
+    ...(adGroups.length ? [{ section: 'Ad groups in this campaign', items: [
+      `Show me performance for ad group "${adGroups[0].name}" in campaign "${phCampName}"`,
+      `Pause ad group "${adGroups[0].name}" in "${phAcctName}"`,
+      `Add keywords to ad group "${adGroups[0].name}" in campaign "${phCampName}": [list keywords]`,
+      `Show me all ads in ad group "${adGroups[0].name}"`,
+    ]}] : []),
+  ]);
+}
+
+function phShowAdGroupPrompts(ads) {
+  phRenderPrompts([
+    { section: 'Ad group — ' + phAgName, items: [
+      `Show me performance for ad group "${phAgName}" in campaign "${phCampName}"`,
+      `Pause ad group "${phAgName}" in "${phAcctName}"`,
+      `Enable ad group "${phAgName}" in "${phAcctName}"`,
+      `Add these keywords to ad group "${phAgName}" in campaign "${phCampName}": [list keywords here]`,
+      `Add negative keywords to ad group "${phAgName}": [list negatives here]`,
+      `Show me the keyword report for ad group "${phAgName}" this month`,
+    ]},
+    { section: 'Ads in this ad group' + (ads.length ? ' (' + ads.length + ' ads)' : ''), items: [
+      `Show me all ads in ad group "${phAgName}" in campaign "${phCampName}"`,
+      `Pause all ads in ad group "${phAgName}" in "${phAcctName}"`,
+      `Create a new Responsive Search Ad in ad group "${phAgName}" in campaign "${phCampName}" with final URL [URL], headlines: [h1], [h2], [h3], descriptions: [d1], [d2]`,
+      ...(ads.length ? [`Show me performance for ads in ad group "${phAgName}" for last 30 days`] : []),
+    ]},
+  ]);
+}
+
+function phRenderPrompts(sections) {
+  const list = document.getElementById('ph-prompts-list');
+  list.innerHTML = sections.map(sec => `
+    <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;padding:10px 14px 6px;background:var(--bg);border-bottom:1px solid var(--border)">${esc(sec.section)}</div>
+    ${sec.items.map(text => `
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;cursor:pointer" onmouseover="this.style.background='var(--blue-l)'" onmouseout="this.style.background=''">
+        <span style="font-size:13px;flex:1;line-height:1.5">${esc(text)}</span>
+        <button onclick="phCopyPrompt(this,'${esc(text).replace(/'/g,"\\'")}');event.stopPropagation()"
+          style="font-size:11px;font-weight:500;color:var(--blue);white-space:nowrap;padding:3px 8px;border:1px solid #BFDBFE;border-radius:5px;background:#EFF6FF;cursor:pointer;flex-shrink:0">
+          Copy
+        </button>
+      </div>
+    `).join('')}
+  `).join('');
+  document.getElementById('ph-prompts').style.display = 'block';
+}
+
+function phCopyPrompt(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓ Copied';
+    btn.style.background = '#EAF5EE';
+    btn.style.color = '#1B7A3E';
+    btn.style.borderColor = '#A7F3D0';
+    setTimeout(() => { btn.textContent = 'Copy'; btn.style.background = btn.style.color = btn.style.borderColor = ''; }, 2000);
+  });
+}
+
+// ── Log ────────────────────────────────────────────────────────────────────
+function loadLog() {
+  document.getElementById('log-body').innerHTML = '<span class="loading"><span class="spin"></span>Loading…</span>';
+  apiFetch('/dashboard/api/log', {}).then(r => {
+    const el = document.getElementById('log-body');
+    if (!r.ok) { el.innerHTML = `<span style="color:var(--red);font-size:13px">${r.error}</span>`; return; }
+    const entries = r.data.entries || [];
+    if (!entries.length) { el.innerHTML = '<span style="color:var(--muted);font-size:13px">No log entries yet.</span>'; return; }
+    el.innerHTML = entries.slice(0, 100).map(e => `
+      <div class="log-entry">
+        <span class="log-time">${esc(e.time)}</span>
+        <span class="log-tool">${esc(e.tool)}</span>
+        <span class="log-cid">${esc(e.customer_id || '—')}</span>
+        <span class="log-status"><span class="badge ${e.ok ? 'badge-ok' : 'badge-err'}">${e.ok ? 'OK' : 'Error'}</span></span>
+      </div>
+    `).join('');
+  });
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+function loadStats() {
+  apiFetch('/dashboard/api/stats', {}).then(r => {
+    const el = document.getElementById('call-stats');
+    if (!r.ok) { el.innerHTML = '<span style="color:var(--red);font-size:13px">Could not load stats.</span>'; return; }
+    const d = r.data;
+    el.innerHTML = `
+      <div class="stat"><span class="stat-label">Total calls (24h)</span><span class="stat-value">${d.total_24h ?? '—'}</span></div>
+      <div class="stat"><span class="stat-label">Errors (24h)</span><span class="stat-value" style="color:${d.errors_24h>0?'var(--red)':'var(--text)'}">${d.errors_24h ?? '—'}</span></div>
+      <div class="stat"><span class="stat-label">Most used tool</span><span class="stat-value" style="font-size:14px;font-family:var(--mono)">${esc(d.top_tool || '—')}</span></div>
+      <div class="stat"><span class="stat-label">Uptime</span><span class="stat-value" style="font-size:16px">${esc(d.uptime || '—')}</span></div>
+    `;
+  });
+}
+
+// ── Token ──────────────────────────────────────────────────────────────────
+let tokenRevealed = false;
+function revealToken() {
+  apiFetch('/dashboard/api/token-peek', {}).then(r => {
+    if (!r.ok) return;
+    document.getElementById('token-display').textContent = r.data.token;
+    tokenRevealed = true;
+  });
+}
+
+function generateToken() {
+  newTokenValue = Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2,'0')).join('');
+  document.getElementById('token-display').textContent = newTokenValue;
+  document.getElementById('save-token-btn').style.display = 'block';
+  document.getElementById('token-msg').textContent = 'New token generated. Click "Save & restart" to apply it.';
+  document.getElementById('token-msg').style.color = 'var(--amber)';
+}
+
+function saveToken() {
+  if (!newTokenValue) return;
+  apiFetch('/dashboard/api/rotate-token', { new_token: newTokenValue }).then(r => {
+    const msg = document.getElementById('token-msg');
+    if (r.ok) {
+      msg.textContent = 'Token saved. Server restarting… Update your Claude Desktop config with the new token.';
+      msg.style.color = 'var(--green)';
+      document.getElementById('save-token-btn').style.display = 'none';
+      newTokenValue = '';
+    } else {
+      msg.textContent = 'Failed to save: ' + (r.error || 'unknown error');
+      msg.style.color = 'var(--red)';
+    }
+  });
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Auto-refresh OAuth countdown every 30s
+setInterval(() => {
+  if (document.getElementById('app').style.display !== 'none') loadOAuthStatus();
+}, 30000);
+</script>
+</body>
+</html>
